@@ -1,0 +1,57 @@
+# 运行依赖
+#
+#     pip install -r requirements.txt
+#
+# 本仓库的 .venv 用的是 Python 3.14，3.10 及以上都能装。
+#
+# 本地开发 / 调试要装的东西在 requirements-dev.txt 里。
+#
+# maimaidx 现在是普通 PyPI 依赖（>=3.1.3），不再需要单独装 / --no-deps，原因见文件末尾。
+
+# -------------------------------------------------------------------- NoneBot 本体
+nonebot2[aiohttp,fastapi,httpx,websockets]>=2.5.0
+nonebot-adapter-onebot>=2.4.6
+
+# ----------------------------------------------- tool.nonebot.plugins 里启用的插件
+# 顺序无关，装的时候 pip 会自己算
+nonebot-plugin-apscheduler>=0.5.0
+nonebot-plugin-parser>=2.6.5
+nonebot-plugin-llmchat>=0.5.1
+nonebot-plugin-arcaea-sticker>=0.4.6
+nonebot_plugin_memes>=0.8.1
+nonebot-plugin-maimaidx>=3.1.3           # 3.1.3 起 aiofiles 上限和 OAuth 配置项都修好了
+
+# arcaea-sticker 的依赖里只写了 htmlrender>=0.2.0（没有上限），而它用的是 0.7 的
+# get_new_page()，0.8 删了这个 API、遇到 RENDER_BACKEND 这类旧配置项还会直接抛错，
+# 所以这个 <0.8 得自己锁。
+nonebot-plugin-htmlrender>=0.6.7,<0.8
+
+# ------------------------------------------------------------------ 本地插件依赖
+pillow>=11,<12                           # plugin_manager 画图；parser 要求 >=11
+sqlmodel>=0.0.38                         # greeting 的数据库
+
+# --------------------------------------------------------------- plugin_manager
+# 在聊天里安装 / 卸载插件走的是 nb-cli（`python -m nb_cli plugin install`），
+# 所以服务器上也得装，否则 /插件安装、/插件卸载 会报 `No module named nb_cli`。
+nb-cli>=1.7.4
+
+# ------------------------------------------------- 上面这些自动带进来的（不用手写）
+# nonebot-plugin-localstore   parser / memes / llmchat / arcaea-sticker / orm 都要用
+# nonebot-plugin-alconna      parser / memes / arcaea-sticker，顺带 waiter
+# nonebot-plugin-uninfo       parser / memes
+# nonebot-plugin-orm          memes 的数据库，顺带 alembic / SQLAlchemy
+# openai、bilibili-api-python、meme_generator 等  llmchat / memes 的依赖
+
+# -------------------------------------------------------------------- maimaidx 备忘
+# PyPI 的 3.1.3 一口气修了以前要靠单独装 + --no-deps 绕过的两个坑：
+#   * aiofiles 上限从 <25.0.0 放开成 >=23.2.1，和 parser 的 aiofiles>=25.1.0
+#     不再冲突（3.1.0 ~ 3.1.2 会报 ResolutionImpossible）。
+#   * DIVINGFISH_CLIENT_ID / _SECRET / _SCOPE / _AUTH_URL 与 MAIMAIDX_PATH /
+#     SAVE_IN_MEMORY / ASSETS_ONLINE 这组键名都已在包里（3.0.x 只有
+#     divingfish_token / divingfish_prober_proxy，装了会让 OAuth 静默失效）。
+# 所以 playwright / pyecharts / httpx-ws / aiosqlite / numpy 这些 maimaidx 自己的
+# 依赖现在由 pip 正常解析带进来，不用在这里手写；装完记得 playwright install chromium。
+#
+# 想改用本地源码调试的话（源码需 >=3.1.3，否则 aiofiles 仍会冲突）：
+#
+#     pip install -e /home/snowman/src/nonebot-plugin-maimaidx
