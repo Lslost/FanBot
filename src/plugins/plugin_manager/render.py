@@ -1,7 +1,8 @@
 """把插件列表 / 插件详情渲染成图片。
 
 使用 Pillow 直接绘制，不依赖 htmlrender、浏览器或网络，因此单机也能稳定出图。
-中文字体会自动在系统字体里查找（Noto Sans CJK / 思源黑体 / 文泉驿等），
+中文字体优先用系统的 Noto Sans CJK SC，找不到时依次退到思源黑体 / 文泉驿，
+最后才用没有中文字形的 DejaVu（此时会打一条警告）；
 也可以用 `PLUGIN_MANAGER__FONT_PATH` 指定。
 """
 
@@ -62,28 +63,66 @@ SOURCE_STYLES = {
     "builtin": ("#eef0f4", "#5c636a"),
 }
 
+# 优先使用的中文字体。Noto Sans CJK SC 字面最全，主流发行版都有现成的包：
+#   Debian / Ubuntu  fonts-noto-cjk
+#   Fedora           google-noto-sans-cjk-fonts
+#   Arch             noto-fonts-cjk
+# 同一个字体在各个发行版里落盘路径不一样，所以下面把目录都列一遍。
+FONT_FAMILY = "Noto Sans CJK SC"
+
+FONT_DIRS = (
+    "/usr/share/fonts/opentype/noto",  # Debian / Ubuntu
+    "/usr/share/fonts/truetype/noto",
+    "/usr/share/fonts/noto-cjk",  # Arch
+    "/usr/share/fonts/google-noto-sans-cjk-fonts",  # Fedora
+)
+
+# 同一个权重下按顺序尝试，越靠前越优先。
+# 注意列表末尾的 DejaVu 没有中文字形，只是给纯英文兜底，命中它意味着系统里
+# 根本没装中文字体，图上的中文会变成豆腐块（会打警告）。
 FONT_FILES: dict[bool, tuple[str, ...]] = {
     False: (
-        "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        *(f"{directory}/NotoSansCJK-Regular.ttc" for directory in FONT_DIRS),
+        "/usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf",
         "/usr/share/fonts/adobe-source-han-sans-fonts/SourceHanSans-Regular.ttc",
+        "/usr/share/fonts/adobe-source-han-sans-fonts/SourceHanSansSC-Regular.otf",
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
         "/usr/share/fonts/wqy-microhei-fonts/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
         "/usr/share/fonts/wqy-zenhei-fonts/wqy-zenhei.ttc",
         "/System/Library/Fonts/PingFang.ttc",
         "C:/Windows/Fonts/msyh.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ),
     True: (
-        "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Bold.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        *(f"{directory}/NotoSansCJK-Bold.ttc" for directory in FONT_DIRS),
+        "/usr/share/fonts/truetype/noto/NotoSansSC-Bold.ttf",
         "/usr/share/fonts/adobe-source-han-sans-fonts/SourceHanSans-Bold.ttc",
+        "/usr/share/fonts/adobe-source-han-sans-fonts/SourceHanSansSC-Bold.otf",
+        # 文泉驿没有独立的粗体字重，用常规字重顶替，至少字形是齐的
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/wqy-microhei-fonts/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
         "/usr/share/fonts/wqy-zenhei-fonts/wqy-zenhei.ttc",
         "/System/Library/Fonts/PingFang.ttc",
         "C:/Windows/Fonts/msyhbd.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     ),
 }
+
+# .ttc 字体集合里有日 / 韩 / 简 / 繁多个字面（Noto Sans CJK 的顺序是
+# JP、KR、SC、TC、HK），要按名字挑出简体中文那个，不能直接用 index=0。
+_CJK_FACE_HINTS = (
+    "CJK SC",
+    "Noto Sans SC",
+    "Source Han Sans SC",
+    "Simplified",
+    "Micro Hei",
+    "Zen Hei",
+)
+
+# 这几个字体没有中文字形，命中就说明系统里没有中文字体
+_NO_CJK_STEMS = ("dejavusans", "dejavusansbold", "dejavusansmono")
 
 _MEASURE = ImageDraw.Draw(Image.new("RGB", (8, 8)))
 _font_warned = False
@@ -97,11 +136,24 @@ def _text_width(text: str, font: ImageFont.FreeTypeFont) -> float:
     return _MEASURE.textlength(text, font=font)
 
 
-@lru_cache(maxsize=64)
-def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    """按需加载字体，找不到中文字体时回退到 Pillow 默认字体。"""
+def _warn_missing_cjk() -> None:
+    """系统里没有中文字体时警告一次（每个进程只打一条）。"""
 
     global _font_warned
+    if _font_warned:
+        return
+    _font_warned = True
+    logger.warning(
+        f"plugin_manager: 系统里没找到中文字体（优先找 {FONT_FAMILY}），"
+        "图片中的中文会显示成方块；"
+        "Debian/Ubuntu 装 fonts-noto-cjk，Fedora 装 google-noto-sans-cjk-fonts，"
+        "或用 PLUGIN_MANAGER__FONT_PATH 指定字体文件"
+    )
+
+
+@lru_cache(maxsize=64)
+def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    """按需加载字体：先找中文字体，都没找到才退回 Pillow 默认字体。"""
 
     config = get_config()
     custom = config.font_bold_path if bold else config.font_path
@@ -112,15 +164,13 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
 
     for path in candidates:
         font = _load_font_file(path, size)
-        if font is not None:
-            return font
+        if font is None:
+            continue
+        if Path(path).stem.replace("-", "").lower() in _NO_CJK_STEMS:
+            _warn_missing_cjk()
+        return font
 
-    if not _font_warned:
-        _font_warned = True
-        logger.warning(
-            "plugin_manager: 没有找到可用的中文字体，图片中的中文可能显示为方块；"
-            "可通过 PLUGIN_MANAGER__FONT_PATH 指定字体文件"
-        )
+    _warn_missing_cjk()
     return ImageFont.load_default(size=size)
 
 
@@ -139,7 +189,7 @@ def _load_font_file(path: str, size: int) -> ImageFont.FreeTypeFont | None:
         if fallback is None:
             fallback = font
         name = " ".join(part for part in font.getname() if part)
-        if "SC" in name or "Simplified" in name or "Micro Hei" in name:
+        if any(hint in name for hint in _CJK_FACE_HINTS):
             return font
 
     return fallback

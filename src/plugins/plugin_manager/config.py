@@ -26,10 +26,10 @@ class PluginManagerConfig(BaseModel):
     """需要扫描的本地插件目录（相对当前工作目录）"""
 
     font_path: str | None = None
-    """自定义正文字体（需要支持中文），默认自动查找系统字体"""
+    """自定义正文字体（需要支持中文）。默认依次查找 Noto Sans CJK SC / 思源黑体 / 文泉驿"""
 
     font_bold_path: str | None = None
-    """自定义标题字体（需要支持中文），默认自动查找系统字体"""
+    """自定义标题字体（需要支持中文）。默认同上，和正文字体同族"""
 
     show_builtin: bool = True
     """是否在插件列表中显示 NoneBot 内置插件"""

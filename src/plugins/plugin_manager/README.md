@@ -45,7 +45,7 @@
 PLUGIN_MANAGER__PAGESIZE=9
 # 需要扫描的本地插件目录
 PLUGIN_MANAGER__PLUGIN_DIRS=["src/plugins"]
-# 自定义中文字体（默认自动查找系统字体）
+# 自定义中文字体（默认用系统的 Noto Sans CJK SC）
 PLUGIN_MANAGER__FONT_PATH=
 PLUGIN_MANAGER__FONT_BOLD_PATH=
 # 是否显示 NoneBot 内置插件
@@ -54,7 +54,18 @@ PLUGIN_MANAGER__SHOW_BUILTIN=true
 
 ## 依赖
 
-需要 `pillow`（图片渲染）与支持中文的字体。字体默认自动查找
-Noto Sans CJK / 思源黑体 / 文泉驿，找不到时可用 `PLUGIN_MANAGER__FONT_PATH` 指定。
+需要 `pillow`（图片渲染）与支持中文的字体。字体优先用 **Noto Sans CJK SC**，
+找不到时依次退到思源黑体、文泉驿，都没有才会退回没有中文字形的 DejaVu
+（这时日志会有警告，图上的中文会变成方块）；也可以用 `PLUGIN_MANAGER__FONT_PATH`
+和 `PLUGIN_MANAGER__FONT_BOLD_PATH` 分别指定正文字体和标题字体。
+
+装字体（注意别只装常规字重，粗体缺失时标题会掉进兜底字体）：
+
+```bash
+sudo apt install -y fonts-noto-cjk                # Debian / Ubuntu
+sudo dnf install -y google-noto-sans-cjk-fonts    # Fedora
+sudo pacman -S noto-fonts-cjk                     # Arch
+```
+
 安装 / 卸载还需要 `nb-cli`（已写进 `requirements.txt`），以及能访问 NoneBot
 插件商店 / PyPI 的网络。
