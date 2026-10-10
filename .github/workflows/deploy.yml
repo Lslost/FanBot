@@ -6,6 +6,9 @@
 #   SSH_USER         登录用户（需要有免密 sudo，因为项目目录属主不是它）
 #   SSH_PORT         可选，默认 22
 #
+# 这四个是建在 environment（名字 "bot config"）里的，不是仓库级 secrets，
+# 所以 job 必须声明 environment: "bot config"，否则取到的是空值。
+#
 # APP_DIR / SCREEN_NAME / LOG_FILE 在下面 job 的 env 里，和服务器上不一致就改这里。
 # 重启方式是 screen：会话名 fanbot，里面跑 .venv/bin/python run.py。
 # 仓库是公开的，服务器上 git fetch 走 HTTPS 不需要额外凭据；如果以后改成私有，
@@ -34,6 +37,9 @@ permissions:
 jobs:
   deploy:
     name: 部署到服务器
+    # secrets 挂在 environment 上，声明之后才拿得到；名字写错时 GitHub 会
+    # 自动新建一个空环境，secret 全变空字符串，所以下面有一道前置检查兜底
+    environment: "bot config"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -46,6 +52,21 @@ jobs:
       LOG_FILE: /tmp/fanbot.log
 
     steps:
+      - name: 检查 secrets 是否取到
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "$SSH_HOST" ] || missing="$missing SSH_HOST"
+          [ -n "$SSH_USER" ] || missing="$missing SSH_USER"
+          [ -n "$SSH_PRIVATE_KEY" ] || missing="$missing SSH_PRIVATE_KEY"
+          if [ -n "$missing" ]; then
+            printf '没取到这些 secret：%s\n' "$missing" >&2
+            printf 'job 声明的 environment 是 "bot config"，确认环境名称一致、且这些 secret 是建在该环境里的\n' >&2
+            exit 1
+          fi
+          # 只报长度不报内容：仓库是公开的，Actions 日志谁都能看
+          printf 'secrets 就绪（私钥 %s 字符）\n' "${#SSH_PRIVATE_KEY}"
+
       - name: 准备 SSH 密钥
         run: |
           set -euo pipefail
@@ -84,6 +105,12 @@ jobs:
 
           say() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
           die() { printf '\n\033[1;31m错误：%s\033[0m\n' "$*" >&2; exit 1; }
+          # 仓库是公开的，Actions 日志谁都能看，回显日志前先把常见密钥形态抹掉
+          redact() {
+            sed -E \
+              -e 's/(sk-|ark-|ghp_|gho_|github_pat_)[A-Za-z0-9_-]{6,}/***/g' \
+              -e 's/(api_key|apikey|token|secret|cookie|password|SESSDATA)([^A-Za-z0-9]{0,4})[A-Za-z0-9._\/:-]{6,}/\1\2***/Ig'
+          }
 
           # 项目目录属主不是 SSH 登录用户，改动一律通过 root 执行
           if [ "$(id -u)" -eq 0 ]; then
@@ -162,7 +189,7 @@ jobs:
           sleep 8
           if ! screen_has; then
             printf '\n\033[1;31m最近 40 行启动日志（%s）：\033[0m\n' "$LOG_FILE" >&2
-            run tail -n 40 "$LOG_FILE" >&2 || true
+            run tail -n 40 "$LOG_FILE" 2>/dev/null | redact >&2 || true
             die "screen 会话 $SCREEN_NAME 启动后立刻退出，原因见上面的日志"
           fi
           say "$SCREEN_NAME 正在运行（日志：$LOG_FILE）"
