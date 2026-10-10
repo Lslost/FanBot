@@ -1,0 +1,175 @@
+# 推送 main 后自动把代码部署到服务器并重启机器人。
+#
+# 需要在仓库 Settings → Secrets and variables → Actions 里配置：
+#   SSH_PRIVATE_KEY  部署用的私钥全文（含 -----BEGIN/END----- 那两行）
+#   SSH_HOST         服务器地址
+#   SSH_USER         登录用户（需要有免密 sudo，因为项目目录属主不是它）
+#   SSH_PORT         可选，默认 22
+#
+# APP_DIR / SCREEN_NAME / LOG_FILE 在下面 job 的 env 里，和服务器上不一致就改这里。
+# 重启方式是 screen：会话名 fanbot，里面跑 .venv/bin/python run.py。
+# 仓库是公开的，服务器上 git fetch 走 HTTPS 不需要额外凭据；如果以后改成私有，
+# 需要在服务器上配好 deploy key 或把 remote 换成带 token 的地址。
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - LICENSE
+      - .gitignore
+      - .github/**
+  workflow_dispatch:
+
+# 同一时间只跑一个部署，排队而不是打断正在进行的那个
+concurrency:
+  group: deploy-fanbot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: 部署到服务器
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PORT: ${{ secrets.SSH_PORT }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      APP_DIR: /home/lighthouse/nonebot/FanBot
+      SCREEN_NAME: fanbot
+      LOG_FILE: /tmp/fanbot.log
+
+    steps:
+      - name: 准备 SSH 密钥
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -T 10 -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: 远程更新并重启
+        env:
+          DEPLOY_REF: ${{ github.ref_name }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # 变量用 %q 转义后传进远程会话，避免分支名里的特殊字符破坏引号
+          remote_env="$(printf 'DEPLOY_REF=%q DEPLOY_SHA=%q APP_DIR=%q SCREEN_NAME=%q LOG_FILE=%q' \
+            "$DEPLOY_REF" "$DEPLOY_SHA" "$APP_DIR" "$SCREEN_NAME" "$LOG_FILE")"
+
+          ssh -i ~/.ssh/id_deploy \
+              -o IdentitiesOnly=yes \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes \
+              -o ConnectTimeout=10 \
+              -o ServerAliveInterval=30 \
+              -p "${SSH_PORT:-22}" \
+              "${SSH_USER}@${SSH_HOST}" \
+              "export $remote_env; bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          APP_DIR="${APP_DIR:-/home/lighthouse/nonebot/FanBot}"
+          SCREEN_NAME="${SCREEN_NAME:-fanbot}"
+          LOG_FILE="${LOG_FILE:-/tmp/fanbot.log}"
+
+          say() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
+          die() { printf '\n\033[1;31m错误：%s\033[0m\n' "$*" >&2; exit 1; }
+
+          # 项目目录属主不是 SSH 登录用户，改动一律通过 root 执行
+          if [ "$(id -u)" -eq 0 ]; then
+            SUDO=()
+          elif sudo -n true 2>/dev/null; then
+            SUDO=(sudo -n)
+          else
+            die "需要 root 或免密 sudo 才能操作 $APP_DIR"
+          fi
+          run() { "${SUDO[@]}" "$@"; }
+
+          [ -d "$APP_DIR/.git" ] || die "$APP_DIR 不是 git 仓库，请先在服务器上 clone 一份"
+          VENV_PY="$APP_DIR/.venv/bin/python"
+          [ -x "$VENV_PY" ] || die "找不到 $VENV_PY，请先按 README 的部署指南建好虚拟环境"
+
+          # 属主和当前用户不一致时 git 会拒绝操作，先声明为安全目录
+          run git config --global --get-all safe.directory | grep -qxF "$APP_DIR" \
+            || run git config --global --add safe.directory "$APP_DIR"
+
+          say "拉取 origin/$DEPLOY_REF（目标 $DEPLOY_SHA）"
+          old_sha="$(run git -C "$APP_DIR" rev-parse HEAD)"
+          run git -C "$APP_DIR" fetch --prune origin "$DEPLOY_REF"
+          if ! run git -C "$APP_DIR" merge --ff-only FETCH_HEAD; then
+            run git -C "$APP_DIR" status --short >&2 || true
+            die "无法快进到 origin/$DEPLOY_REF：服务器上有本地改动或分支分叉（plugin_index.json 会被 /插件安装 在运行时改写，部署前先处理它）"
+          fi
+          new_sha="$(run git -C "$APP_DIR" rev-parse HEAD)"
+
+          # 服务器上有领先的本地提交时，--ff-only 会报 Already up to date 却什么也没换，
+          # 这种“假成功”必须挡住，否则跑的代码和 CI 以为部署的不是一个 commit
+          target_sha="$(run git -C "$APP_DIR" rev-parse FETCH_HEAD)"
+          if [ "$new_sha" != "$target_sha" ]; then
+            run git -C "$APP_DIR" log --oneline "FETCH_HEAD..HEAD" >&2 || true
+            die "服务器上的 HEAD（${new_sha:0:8}）不是 origin/$DEPLOY_REF 的 ${target_sha:0:8}，说明有本地提交领先，不会自动覆盖，请先在服务器上处理"
+          fi
+
+          if [ "$old_sha" = "$new_sha" ]; then
+            say "代码已是最新（${new_sha:0:8}），跳过依赖安装"
+            changed=""
+          else
+            say "代码更新：${old_sha:0:8} -> ${new_sha:0:8}"
+            changed="$(run git -C "$APP_DIR" diff --name-only "$old_sha" "$new_sha")"
+          fi
+
+          if printf '%s\n' "$changed" | grep -qE '^(requirements\.txt|pyproject\.toml)$'; then
+            say "依赖清单有变动，更新 pip 包"
+            run "$VENV_PY" -m pip install -q -U pip
+            run "$VENV_PY" -m pip install -q -r "$APP_DIR/requirements.txt"
+          fi
+
+          # screen 会话按启动它的用户分目录，所以必须和目录属主一样用 root 启停，
+          # 否则以登录用户启动的会话（socket 在 /run/screen/S-<用户> 下）根本查不到
+          screen_has() { run screen -ls 2>/dev/null | grep -qE "[0-9]+\.${SCREEN_NAME}[[:space:]]"; }
+
+          if screen_has; then
+            say "关闭旧的 screen 会话 $SCREEN_NAME"
+            run screen -S "$SCREEN_NAME" -X quit || true
+            for _ in $(seq 1 20); do
+              screen_has || break
+              sleep 0.5
+            done
+            if screen_has; then
+              run screen -wipe >/dev/null 2>&1 || true   # 清掉 (Dead) 状态的残留会话
+              if screen_has; then
+                die "screen 会话 $SCREEN_NAME 没能退出，请在服务器上 screen -r $SCREEN_NAME 看看"
+              fi
+            fi
+          elif run pgrep -f "python[0-9.]* run\.py" >/dev/null 2>&1; then
+            say "发现疑似还在跑的 run.py 进程："
+            run pgrep -af "python[0-9.]* run\.py" >&2 || true
+            die "它不在 screen 会话 $SCREEN_NAME 里，直接启动会起第二个实例抢端口，请先手动处理"
+          fi
+
+          say "在 screen 会话 $SCREEN_NAME 里启动 run.py"
+          run screen -dmS "$SCREEN_NAME" bash -c "cd '$APP_DIR' && exec '$VENV_PY' run.py > '$LOG_FILE' 2>&1"
+          sleep 8
+          if ! screen_has; then
+            printf '\n\033[1;31m最近 40 行启动日志（%s）：\033[0m\n' "$LOG_FILE" >&2
+            run tail -n 40 "$LOG_FILE" >&2 || true
+            die "screen 会话 $SCREEN_NAME 启动后立刻退出，原因见上面的日志"
+          fi
+          say "$SCREEN_NAME 正在运行（日志：$LOG_FILE）"
+
+          say "部署完成：$new_sha"
+          REMOTE
+
+      - name: 清理私钥
+        if: always()
+        run: rm -f ~/.ssh/id_deploy
