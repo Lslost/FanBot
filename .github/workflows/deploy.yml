@@ -183,7 +183,20 @@ jobs:
 
           # screen 会话按启动它的用户分目录，所以必须和目录属主一样用 root 启停，
           # 否则以登录用户启动的会话（socket 在 /run/screen/S-<用户> 下）根本查不到
-          screen_has() { run screen -ls 2>/dev/null | grep -qE "[0-9]+\.${SCREEN_NAME}[[:space:]]"; }
+          if ! run bash -c 'command -v screen >/dev/null 2>&1'; then
+            die "服务器上没装 screen（以 root 检查）。Debian/Ubuntu：sudo apt install -y screen；RHEL/CentOS：sudo yum install -y screen"
+          fi
+          # screen -ls 的每一行形如 "\t3768380.fanbot\t(Detached)"
+          screen_pid() {
+            run screen -ls 2>/dev/null \
+              | sed -nE "s/^[[:space:]]*([0-9]+)\.${SCREEN_NAME}[[:space:]]+.*/\1/p" | head -1 || true
+          }
+          screen_state() {
+            run screen -ls 2>/dev/null \
+              | sed -nE "s/^[[:space:]]*[0-9]+\.${SCREEN_NAME}[[:space:]]+.*\((Attached|Detached|Dead).*/\1/p" | head -1 || true
+          }
+          # (Dead) 的会话不算“在跑”，否则会把它当成启动成功
+          screen_has() { local s; s="$(screen_state)"; [ -n "$s" ] && [ "$s" != "Dead" ]; }
 
           if screen_has; then
             say "关闭旧的 screen 会话 $SCREEN_NAME"
@@ -199,20 +212,42 @@ jobs:
               fi
             fi
           elif run pgrep -f "python[0-9.]* run\.py" >/dev/null 2>&1; then
-            say "发现疑似还在跑的 run.py 进程："
-            run pgrep -af "python[0-9.]* run\.py" >&2 || true
-            die "它不在 screen 会话 $SCREEN_NAME 里，直接启动会起第二个实例抢端口，请先手动处理"
+            say "发现疑似还在跑的 run.py 进程（用户 / PID / 命令）："
+            run bash -c 'pgrep -f "python[0-9.]* run\.py" | xargs -r ps -o user=,pid=,args= -p' || true
+            say "root 名下的 screen 会话："
+            run screen -ls 2>&1 || true
+            die "上面那些进程不在 root 的 screen 会话 $SCREEN_NAME 里（多半是另一个用户起的），直接启动会起第二个实例抢端口。要么把它停掉改用本 workflow 管理，要么把 SCREEN_NAME 改成你实际在用、且属于同一用户的那个会话名"
           fi
 
           say "在 screen 会话 $SCREEN_NAME 里启动 run.py"
-          run screen -dmS "$SCREEN_NAME" bash -c "cd '$APP_DIR' && exec '$VENV_PY' run.py > '$LOG_FILE' 2>&1"
-          sleep 8
-          if ! screen_has; then
-            printf '\n\033[1;31m最近 40 行启动日志（%s）：\033[0m\n' "$LOG_FILE" >&2
-            run tail -n 40 "$LOG_FILE" 2>/dev/null | redact >&2 || true
-            die "screen 会话 $SCREEN_NAME 启动后立刻退出，原因见上面的日志"
+          # 不把输出重定向掉，用 screen 自己的 -L -Logfile：这样 screen -r 进去能直接
+          # 看到日志，同时日志也落盘给 CI 用（重定向的话 r 进去只会是一片空白）
+          run bash -c ": > '$LOG_FILE'" || true
+          run screen -L -Logfile "$LOG_FILE" -dmS "$SCREEN_NAME" \
+            bash -c "cd '$APP_DIR' && exec '$VENV_PY' run.py"
+
+          # 会话活着不等于机器人起来了（比如卡在交互式提问上），得等它真的监听端口
+          say "等它监听端口（最多 60 秒）"
+          started=""
+          bot_pid=""
+          for _ in $(seq 1 60); do
+            screen_has || break
+            sess_pid="$(screen_pid)"
+            if [ -n "$sess_pid" ]; then
+              bot_pid="$(run pgrep -P "$sess_pid" 2>/dev/null | head -1 || true)"
+            fi
+            if [ -n "$bot_pid" ]; then
+              listening="$(run ss -ltnp 2>/dev/null || true)"
+              case "$listening" in *"pid=${bot_pid},"*) started=1; break ;; esac
+            fi
+            sleep 1
+          done
+          if [ -z "$started" ]; then
+            printf '\n\033[1;31m没能确认它开始监听端口，最近 40 行日志（%s）：\033[0m\n' "$LOG_FILE"
+            run tail -n 40 "$LOG_FILE" 2>/dev/null | redact || true
+            die "screen 会话 $SCREEN_NAME 里的 run.py 没起来：看上面的日志（常见原因是数据库迁移的交互式提问没人回答，或者端口被别的进程占了）"
           fi
-          say "$SCREEN_NAME 正在运行（日志：$LOG_FILE）"
+          say "$SCREEN_NAME 正在运行（PID $bot_pid，已监听端口，日志：$LOG_FILE）"
 
           say "部署完成：$new_sha"
           REMOTE

@@ -226,3 +226,8 @@ debug.py
 # Codex utilities
 .codex/
 .agents/
+
+# localstore 运行时数据（LOCALSTORE_USE_CWD=true 时生成在项目根目录）
+data/
+cache/
+config/
