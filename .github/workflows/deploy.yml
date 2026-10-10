@@ -122,13 +122,33 @@ jobs:
           fi
           run() { "${SUDO[@]}" "$@"; }
 
-          [ -d "$APP_DIR/.git" ] || die "$APP_DIR 不是 git 仓库，请先在服务器上 clone 一份"
-          VENV_PY="$APP_DIR/.venv/bin/python"
-          [ -x "$VENV_PY" ] || die "找不到 $VENV_PY，请先按 README 的部署指南建好虚拟环境"
+          # 下面这些检查统统用 root 做：目录属主不是登录用户时，登录用户可能连
+          # stat 都进不去（root 属主 + 700），会把“有权限”误判成“目录不存在”
+          if ! run test -d "$APP_DIR"; then
+            say "$APP_DIR 以 root 身份也看不到，上级目录内容："
+            run ls -la "$(dirname "$APP_DIR")" >&2 || true
+            die "把 APP_DIR 改成服务器上项目的真实路径"
+          fi
 
-          # 属主和当前用户不一致时 git 会拒绝操作，先声明为安全目录
+          # 属主和当前用户不一致时 git 会拒绝操作（dubious ownership），
+          # 得在第一次用 git 访问它之前声明为安全目录
           run git config --global --get-all safe.directory | grep -qxF "$APP_DIR" \
             || run git config --global --add safe.directory "$APP_DIR"
+
+          if ! run git -C "$APP_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+            say "$APP_DIR 存在，但里面没有可用的 git 仓库，目录内容："
+            run ls -la "$APP_DIR" >&2 || true
+            say "上级两层内找到的 .git："
+            run find "$(dirname "$APP_DIR")" -maxdepth 4 -name .git -print 2>/dev/null | head -20 >&2 || true
+            die "这个目录不是 clone 出来的（可能是直接上传的），要么先在服务器上 clone，要么改用 rsync 方式部署"
+          fi
+
+          VENV_PY="$APP_DIR/.venv/bin/python"
+          if ! run test -x "$VENV_PY"; then
+            say "找不到可执行的 $VENV_PY，项目目录内容："
+            run ls -la "$APP_DIR" >&2 || true
+            die "虚拟环境不在预期位置，先按 README 建好，或告诉我它在哪"
+          fi
 
           say "拉取 origin/$DEPLOY_REF（目标 $DEPLOY_SHA）"
           old_sha="$(run git -C "$APP_DIR" rev-parse HEAD)"
