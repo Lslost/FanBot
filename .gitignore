@@ -231,3 +231,6 @@ debug.py
 data/
 cache/
 config/
+
+# 推送脚本
+pushenv.sh
