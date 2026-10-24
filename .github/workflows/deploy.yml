@@ -10,7 +10,7 @@
 # 所以 job 必须声明 environment: "bot config"，否则取到的是空值。
 #
 # APP_DIR / SCREEN_NAME / LOG_FILE 在下面 job 的 env 里，和服务器上不一致就改这里。
-# 重启方式是 screen：会话名 fanbot，里面跑 .venv/bin/python run.py。
+# 重启方式是 screen：会话名 fanbot，里面跑 .venv/bin/python main.py。
 # 仓库是公开的，服务器上 git fetch 走 HTTPS 不需要额外凭据；如果以后改成私有，
 # 需要在服务器上配好 deploy key 或把 remote 换成带 token 的地址。
 
@@ -212,19 +212,19 @@ jobs:
               fi
             fi
           elif run pgrep -f "python[0-9.]* run\.py" >/dev/null 2>&1; then
-            say "发现疑似还在跑的 run.py 进程（用户 / PID / 命令）："
+            say "发现疑似还在跑的 main.py 进程（用户 / PID / 命令）："
             run bash -c 'pgrep -f "python[0-9.]* run\.py" | xargs -r ps -o user=,pid=,args= -p' || true
             say "root 名下的 screen 会话："
             run screen -ls 2>&1 || true
             die "上面那些进程不在 root 的 screen 会话 $SCREEN_NAME 里（多半是另一个用户起的），直接启动会起第二个实例抢端口。要么把它停掉改用本 workflow 管理，要么把 SCREEN_NAME 改成你实际在用、且属于同一用户的那个会话名"
           fi
 
-          say "在 screen 会话 $SCREEN_NAME 里启动 run.py"
+          say "在 screen 会话 $SCREEN_NAME 里启动 main.py"
           # 不把输出重定向掉，用 screen 自己的 -L -Logfile：这样 screen -r 进去能直接
           # 看到日志，同时日志也落盘给 CI 用（重定向的话 r 进去只会是一片空白）
           run bash -c ": > '$LOG_FILE'" || true
           run screen -L -Logfile "$LOG_FILE" -dmS "$SCREEN_NAME" \
-            bash -c "cd '$APP_DIR' && exec '$VENV_PY' run.py"
+            bash -c "cd '$APP_DIR' && exec '$VENV_PY' main.py"
 
           # 会话活着不等于机器人起来了（比如卡在交互式提问上），得等它真的监听端口
           say "等它监听端口（最多 60 秒）"
@@ -245,7 +245,7 @@ jobs:
           if [ -z "$started" ]; then
             printf '\n\033[1;31m没能确认它开始监听端口，最近 40 行日志（%s）：\033[0m\n' "$LOG_FILE"
             run tail -n 40 "$LOG_FILE" 2>/dev/null | redact || true
-            die "screen 会话 $SCREEN_NAME 里的 run.py 没起来：看上面的日志（常见原因是数据库迁移的交互式提问没人回答，或者端口被别的进程占了）"
+            die "screen 会话 $SCREEN_NAME 里的 main.py 没起来：看上面的日志（常见原因是数据库迁移的交互式提问没人回答，或者端口被别的进程占了）"
           fi
           say "$SCREEN_NAME 正在运行（PID $bot_pid，已监听端口，日志：$LOG_FILE）"
 
