@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from nonebot.log import logger
 
 if TYPE_CHECKING:
-    from nonebot.adapters import Event, MessageSegment
+    from nonebot.adapters import Bot, Event, MessageSegment
 
 __all__ = [
     "GENDER_LABELS",
@@ -19,6 +19,7 @@ __all__ = [
     "build_at_segment",
     "day_key",
     "detect_gender",
+    "fetch_group_gender",
     "detect_nickname",
     "detect_scope_id",
     "format_duration",
@@ -88,6 +89,37 @@ def detect_gender(event: Event) -> str | None:
         if gender:
             return gender
     return None
+
+
+async def fetch_group_gender(bot: Bot, event: Event) -> str | None:
+    """从群成员资料里补查性别。
+
+    部分协议端的消息事件没有填写 ``sender.sex``，但群成员资料接口通常仍有
+    该字段。只处理群消息；接口不可用或没有返回性别时返回 ``None``。
+    """
+
+    group_id = getattr(event, "group_id", None)
+    if group_id is None:
+        return None
+
+    user_id = getattr(event, "user_id", None)
+    if user_id is None:
+        user_id = event.get_user_id()
+
+    try:
+        member = await bot.call_api(
+            "get_group_member_info",
+            group_id=group_id,
+            user_id=user_id,
+            no_cache=False,
+        )
+    except Exception as error:
+        logger.opt(exception=error).debug(
+            f"greeting: 查询群成员 {user_id} 的性别失败"
+        )
+        return None
+
+    return normalize_gender(_raw_gender(member))
 
 
 def detect_nickname(event: Event) -> str | None:

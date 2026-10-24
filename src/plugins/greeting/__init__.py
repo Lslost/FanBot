@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from nonebot import on_command
-from nonebot.adapters import Event, Message
+from nonebot.adapters import Bot, Event, Message
 from nonebot.matcher import Matcher
 from nonebot.plugin import PluginMetadata
 
@@ -17,6 +17,7 @@ from .utils import (
     detect_gender,
     detect_nickname,
     detect_scope_id,
+    fetch_group_gender,
     format_duration,
     gender_label,
     parse_time_window,
@@ -96,7 +97,7 @@ def _out_of_window(event: Event, greeting: str, window_label: str) -> Message:
 
 
 @morning_matcher.handle()
-async def _handle_morning(event: Event, matcher: Matcher) -> None:
+async def _handle_morning(bot: Bot, event: Event, matcher: Matcher) -> None:
     now = datetime.now()
     config = get_config()
     database = get_database()
@@ -104,13 +105,18 @@ async def _handle_morning(event: Event, matcher: Matcher) -> None:
     scope_id = detect_scope_id(event)
     user_id = event.get_user_id()
     nickname = detect_nickname(event)
-    gender = detect_gender(event) or database.gender_of(user_id) or "unknown"
     day = day_key(now, config.day_boundary_hour)
 
     window = parse_time_window(config.morning_start, config.morning_end)
     if window is not None and not window.contains(now.time()):
         await matcher.finish(_out_of_window(event, "早安", window.label))
 
+    gender = (
+        detect_gender(event)
+        or database.gender_of(user_id)
+        or await fetch_group_gender(bot, event)
+        or "unknown"
+    )
     check_in = database.check_in(
         scope_id=scope_id,
         user_id=user_id,
@@ -142,7 +148,7 @@ async def _handle_morning(event: Event, matcher: Matcher) -> None:
 
 
 @night_matcher.handle()
-async def _handle_night(event: Event, matcher: Matcher) -> None:
+async def _handle_night(bot: Bot, event: Event, matcher: Matcher) -> None:
     now = datetime.now()
     config = get_config()
     database = get_database()
@@ -150,13 +156,18 @@ async def _handle_night(event: Event, matcher: Matcher) -> None:
     scope_id = detect_scope_id(event)
     user_id = event.get_user_id()
     nickname = detect_nickname(event)
-    gender = detect_gender(event) or database.gender_of(user_id) or "unknown"
     day = day_key(now, config.day_boundary_hour)
 
     window = parse_time_window(config.night_start, config.night_end)
     if window is not None and not window.contains(now.time()):
         await matcher.finish(_out_of_window(event, "晚安", window.label))
 
+    gender = (
+        detect_gender(event)
+        or database.gender_of(user_id)
+        or await fetch_group_gender(bot, event)
+        or "unknown"
+    )
     check_in = database.check_in(
         scope_id=scope_id,
         user_id=user_id,
