@@ -37,7 +37,7 @@ __plugin_meta__ = PluginMetadata(
 )
 
 morning_matcher = on_command(
-    "早安", aliases={"早", "早上好", "morning", "おはよう"}, priority=5, block=True
+    "早安", aliases={"早上好", "morning", "おはよう"}, priority=5, block=True
 )
 night_matcher = on_command("晚安", aliases={"好梦", "goodnight", "おやすみ", "oysm"}, priority=5, block=True)
 
