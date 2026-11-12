@@ -44,6 +44,9 @@ night_matcher = on_command("晚安", aliases={"好梦", "goodnight", "おやす�
 MAX_SLEEP = timedelta(hours=20)
 """超过这个时长就不当成「睡了一觉」，只提示作息"""
 
+MAX_SLEEP_REPORT = timedelta(days=1)
+"""超过这个时长干脆不提睡眠，隔太久已经没参考意义了"""
+
 
 def _with_mention(event: Event, text: str) -> str | Message:
     """能 @ 到人的时候，在提示语前面加上 @。"""
@@ -73,13 +76,15 @@ def _greeting_line(
     return f"{emoji} {greeting}{name}{suffix}"
 
 
-def _sleep_line(now: datetime, last_night: datetime | None) -> str:
-    """根据上一次晚安时间拼出睡眠时长文案。"""
+def _sleep_line(now: datetime, last_night: datetime | None) -> str | None:
+    """根据上一次晚安时间拼出睡眠时长文案；隔了超过一天就不报了。"""
 
     if last_night is None:
         return "😴 还没有你的晚安记录，今晚记得早点休息～"
 
     duration = now - last_night
+    if duration > MAX_SLEEP_REPORT:
+        return None
     if duration > MAX_SLEEP:
         return f"😴 距上次晚安已经 {format_duration(duration)}，作息要规律一点哦。"
     return (
@@ -143,7 +148,9 @@ async def _handle_morning(bot: Bot, event: Event, matcher: Matcher) -> None:
         rank=check_in.rank,
         label=label,
     )
-    reply = reply + "\n" + _sleep_line(now, database.last_time(user_id, "night"))
+    sleep_line = _sleep_line(now, database.last_time(user_id, "night"))
+    if sleep_line:
+        reply = reply + "\n" + sleep_line
     await matcher.finish(reply)
 
 
