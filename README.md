@@ -11,7 +11,6 @@
 | llmchat | 大模型聊天，支持私聊、群聊触发、随机插话、MCP 工具调用 |
 | maimaidx | 舞萌 DX 查分、绑定、猜歌、别名推送等 |
 | memes | 表情包生成 |
-| arcaea-sticker | Arcaea 表情包自动回复 |
 | apscheduler | 定时任务 |
 | greeting | 本地插件：群友早安 / 晚安打卡、名次与睡眠时长 |
 | plugin_manager | 本地插件：在聊天里查看 / 安装 / 卸载插件 |
@@ -20,7 +19,7 @@
 
 - Python 3.10 ~ 3.14
 - 一个 OneBot v11 协议端
-- Linux 上跑图片渲染（arcaea-sticker 走 htmlrender）需要 Chromium 及其系统依赖
+- Linux 上跑 maimaidx 图片渲染需要 Chromium 及其系统依赖
 - 中文字体（plugin_manager 画中文用，缺省会自动找 Noto Sans CJK / 思源黑体 / 文泉驿）
 
 ## 部署指南
@@ -37,11 +36,11 @@ pip install -U pip
 pip install -r requirements.txt
 ```
 
-`requirements.txt` 里每个包都写了用途，以及 maimaidx、htmlrender 那几个版本坑的来龙去脉，出问题可以先看那里的注释。不想用 venv 的话跳过前两步直接 `pip install` 也行。
+`requirements.txt` 里每个包都写了用途，以及 maimaidx 的版本注意事项，出问题可以先看那里的注释。不想用 venv 的话跳过前两步直接 `pip install` 也行。
 
 ### 2. 装 Playwright 浏览器
 
-htmlrender 靠 Playwright 驱动 Chromium 渲染图片：
+maimaidx 的图片渲染靠 Playwright 驱动 Chromium：
 
 ```bash
 playwright install chromium
@@ -65,7 +64,6 @@ cp .env.example .env
 
 - `parser_bili_ck` —— B 站 cookie，必须含 `SESSDATA`，否则 B 站视频解析不了
 - `DIVINGFISH_CLIENT_ID` / `DIVINGFISH_CLIENT_SECRET` —— 水鱼查分器的 OAuth 应用，填了才走 OAuth 授权
-- `RENDER_PLAYWRIGHT__EXECUTABLE_PATH` —— 服务器上 chromium 的真实路径，默认值是 `/usr/bin/chromium-browser`
 
 两个容易踩的坑：不想要的配置项请**整行注释掉**，不要写 `XXX=None`（会被当成字符串 `"None"`）；也别写「空值 + 行内注释」。
 

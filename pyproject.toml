@@ -10,15 +10,12 @@ dependencies = [
     "nonebot-plugin-apscheduler>=0.5.0",
     "nonebot-plugin-parser>=2.6.5",
     "nonebot-plugin-llmchat>=0.5.1",
-    "nonebot-plugin-arcaea-sticker>=0.4.6",
-    "nonebot-plugin-htmlrender>=0.6.7,<0.8",
     "nonebot_plugin_memes>=0.8.1",
-    "pillow>=11,<12",
+    "pillow<12,>=11",
     "sqlmodel>=0.0.38",
-    # plugin_manager 的 /插件安装、/插件卸载 用 nb-cli 执行 nb plugin install
     "nb-cli>=1.7.4",
-    # 3.1.3 起 aiofiles 上限与 OAuth 配置项都已在 PyPI 版本里修好，可直接声明。
     "nonebot-plugin-maimaidx>=3.1.3",
+    "nonebot-adapter-milky>=1.3.0",
 ]
 
 [tool.nonebot]
@@ -30,6 +27,7 @@ nonebot-adapter-onebot = [
     { name = "OneBot V11", module_name = "nonebot.adapters.onebot.v11" }
 ]
 "@local" = []
+nonebot-adapter-milky = [{name = "nonebot-adapter-milky", module_name = "nonebot.adapters.milky"}]
 
 [tool.nonebot.plugins]
 "@local" = []
@@ -37,5 +35,4 @@ nonebot-plugin-apscheduler = ["nonebot_plugin_apscheduler"]
 nonebot-plugin-parser = ["nonebot_plugin_parser"]
 nonebot-plugin-maimaidx = ["nonebot_plugin_maimaidx"]
 nonebot-plugin-llmchat = ["nonebot_plugin_llmchat"]
-nonebot-plugin-arcaea-sticker = ["nonebot_plugin_arcaea_sticker"]
 nonebot_plugin_memes = ["nonebot_plugin_memes"]
