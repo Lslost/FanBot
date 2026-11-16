@@ -1,0 +1,132 @@
+# 代码质量门禁：安装运行依赖，检查语法、依赖和配置，并实际加载一次全部插件。
+#
+# 只改文档、许可证或 .gitignore 时不跑 CI；workflow 文件本身的改动会跑 CI，
+# 因此也会触发一次部署。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - LICENSE
+      - .gitignore
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - LICENSE
+      - .gitignore
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: 安装依赖
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: 检查语法、JSON 和 workflow YAML
+        run: |
+          set -euo pipefail
+          python -m compileall -q main.py src
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          import yaml
+
+          index_path = Path("plugin_index.json")
+          index = json.loads(index_path.read_text(encoding="utf-8"))
+          for key in ("plugins", "plugin_dirs"):
+              value = index.get(key)
+              assert isinstance(value, list), f"{index_path}: {key} 必须是数组"
+              assert all(isinstance(item, str) for item in value), (
+                  f"{index_path}: {key} 只能包含字符串"
+              )
+
+          for path in sorted(Path(".github/workflows").glob("*.y*ml")):
+              documents = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
+              assert documents and all(isinstance(doc, dict) for doc in documents), (
+                  f"{path}: workflow 必须是非空 YAML 映射"
+              )
+              print(f"YAML 通过：{path}")
+          PY
+
+      - name: 检查依赖一致性
+        run: python -m pip check
+
+      - name: 加载应用与全部插件
+        env:
+          DRIVER: ~fastapi+~httpx+~websockets+~aiohttp
+          HOST: 127.0.0.1
+          PORT: 43939
+          LOG_LEVEL: INFO
+          SUPERUSERS: '[]'
+          NICKNAME: '["FanBot CI"]'
+          COMMAND_START: '["/"]'
+          COMMAND_SEP: '["."]'
+          API_TIMEOUT: "10"
+          LOCALSTORE_USE_CWD: "true"
+          ALEMBIC_STARTUP_CHECK: "false"
+          MAIMAIDX_PATH: ${{ runner.temp }}/maimaidx/static
+          LLMCHAT__API_PRESETS: |
+            [
+              {
+                "name": "ci",
+                "api_key": "not-a-real-key",
+                "model_name": "ci",
+                "api_base": "http://127.0.0.1:9"
+              }
+            ]
+        run: |
+          set -euo pipefail
+          mkdir -p "$MAIMAIDX_PATH"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          import main  # noqa: F401 - 初始化 NoneBot、注册适配器并加载插件
+          import nonebot
+
+          index = json.loads(Path("plugin_index.json").read_text(encoding="utf-8"))
+          expected = set(index["plugins"]) | {"greeting", "plugin_manager"}
+          loaded = {plugin.id_ for plugin in nonebot.get_loaded_plugins()}
+          missing = sorted(expected - loaded)
+          if missing:
+              raise SystemExit(f"以下插件没有加载成功：{', '.join(missing)}")
+          print(f"应用初始化成功，已加载 {len(loaded)} 个插件")
+          PY

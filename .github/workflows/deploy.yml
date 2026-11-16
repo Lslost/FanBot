@@ -1,29 +1,16 @@
-# 推送 main 后自动把代码部署到服务器并重启机器人。
+# main 的 CI 通过后，把同一个 commit 部署到服务器。
 #
-# 需要在仓库 Settings → Secrets and variables → Actions 里配置：
-#   SSH_PRIVATE_KEY  部署用的私钥全文（含 -----BEGIN/END----- 那两行）
-#   SSH_HOST         服务器地址
-#   SSH_USER         登录用户（需要有免密 sudo，因为项目目录属主不是它）
-#   SSH_PORT         可选，默认 22
-#
-# 这四个是建在 environment（名字 "bot config"）里的，不是仓库级 secrets，
-# 所以 job 必须声明 environment: "bot config"，否则取到的是空值。
-#
-# APP_DIR / SCREEN_NAME / LOG_FILE 在下面 job 的 env 里，和服务器上不一致就改这里。
-# 重启方式是 screen：会话名 fanbot，里面跑 .venv/bin/python main.py。
-# 仓库是公开的，服务器上 git fetch 走 HTTPS 不需要额外凭据；如果以后改成私有，
-# 需要在服务器上配好 deploy key 或把 remote 换成带 token 的地址。
+# 环境 "bot config" 需要 SSH_HOST、SSH_USER、SSH_PRIVATE_KEY，
+# 可选 SSH_PORT（默认 22）。SSH_USER 需要免密 sudo。
+# APP_DIR、SCREEN_NAME、LOG_FILE 在 job 的 env 中按服务器实际情况修改。
 
 name: Deploy
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths-ignore:
-      - "**.md"
-      - LICENSE
-      - .gitignore
-      - .github/**
   workflow_dispatch:
 
 # 同一时间只跑一个部署，排队而不是打断正在进行的那个
@@ -37,8 +24,13 @@ permissions:
 jobs:
   deploy:
     name: 部署到服务器
-    # secrets 挂在 environment 上，声明之后才拿得到；名字写错时 GitHub 会
-    # 自动新建一个空环境，secret 全变空字符串，所以下面有一道前置检查兜底
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'
+      )
     environment: "bot config"
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -52,41 +44,29 @@ jobs:
       LOG_FILE: /tmp/fanbot.log
 
     steps:
-      - name: 检查 secrets 是否取到
+      - name: 部署 CI 验证过的 commit
+        env:
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
-          missing=""
-          [ -n "$SSH_HOST" ] || missing="$missing SSH_HOST"
-          [ -n "$SSH_USER" ] || missing="$missing SSH_USER"
-          [ -n "$SSH_PRIVATE_KEY" ] || missing="$missing SSH_PRIVATE_KEY"
-          if [ -n "$missing" ]; then
-            printf '没取到这些 secret：%s\n' "$missing" >&2
-            printf 'job 声明的 environment 是 "bot config"，确认环境名称一致、且这些 secret 是建在该环境里的\n' >&2
-            exit 1
-          fi
-          # 只报长度不报内容：仓库是公开的，Actions 日志谁都能看
-          printf 'secrets 就绪（私钥 %s 字符）\n' "${#SSH_PRIVATE_KEY}"
 
-      - name: 准备 SSH 密钥
-        run: |
-          set -euo pipefail
+          : "${SSH_HOST:?环境 bot config 缺少 SSH_HOST}"
+          : "${SSH_USER:?环境 bot config 缺少 SSH_USER}"
+          : "${SSH_PRIVATE_KEY:?环境 bot config 缺少 SSH_PRIVATE_KEY}"
+
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
-          ssh-keyscan -T 10 -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          trap 'rm -f ~/.ssh/id_deploy' EXIT
+
+          ssh-keyscan -T 10 -p "${SSH_PORT:-22}" -H "$SSH_HOST" \
+            >> ~/.ssh/known_hosts 2>/dev/null
           chmod 644 ~/.ssh/known_hosts
 
-      - name: 远程更新并重启
-        env:
-          DEPLOY_REF: ${{ github.ref_name }}
-          DEPLOY_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          # 变量用 %q 转义后传进远程会话，避免分支名里的特殊字符破坏引号
-          remote_env="$(printf 'DEPLOY_REF=%q DEPLOY_SHA=%q APP_DIR=%q SCREEN_NAME=%q LOG_FILE=%q' \
-            "$DEPLOY_REF" "$DEPLOY_SHA" "$APP_DIR" "$SCREEN_NAME" "$LOG_FILE")"
+          echo "部署 $DEPLOY_SHA"
+          remote_env="$(printf 'DEPLOY_SHA=%q APP_DIR=%q SCREEN_NAME=%q LOG_FILE=%q' \
+            "$DEPLOY_SHA" "$APP_DIR" "$SCREEN_NAME" "$LOG_FILE")"
 
           ssh -i ~/.ssh/id_deploy \
               -o IdentitiesOnly=yes \
@@ -102,156 +82,71 @@ jobs:
           APP_DIR="${APP_DIR:-/home/lighthouse/nonebot/FanBot}"
           SCREEN_NAME="${SCREEN_NAME:-fanbot}"
           LOG_FILE="${LOG_FILE:-/tmp/fanbot.log}"
+          VENV_PY="$APP_DIR/.venv/bin/python"
 
-          say() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
-          die() { printf '\n\033[1;31m错误：%s\033[0m\n' "$*" >&2; exit 1; }
-          # 仓库是公开的，Actions 日志谁都能看，回显日志前先把常见密钥形态抹掉
-          redact() {
-            sed -E \
-              -e 's/(sk-|ark-|ghp_|gho_|github_pat_)[A-Za-z0-9_-]{6,}/***/g' \
-              -e 's/(api_key|apikey|token|secret|cookie|password|SESSDATA)([^A-Za-z0-9]{0,4})[A-Za-z0-9._\/:-]{6,}/\1\2***/Ig'
+          if [ "$(id -u)" -eq 0 ]; then
+            sudo_cmd=()
+          elif sudo -n true 2>/dev/null; then
+            sudo_cmd=(sudo -n)
+          else
+            echo "SSH_USER 需要 root 或免密 sudo" >&2
+            exit 1
+          fi
+          run() { "${sudo_cmd[@]}" "$@"; }
+          screen_active() {
+            run screen -ls 2>/dev/null \
+              | grep -Eq "\.${SCREEN_NAME}[[:space:]]+\((Attached|Detached)\)"
           }
 
-          # 项目目录属主不是 SSH 登录用户，改动一律通过 root 执行
-          if [ "$(id -u)" -eq 0 ]; then
-            SUDO=()
-          elif sudo -n true 2>/dev/null; then
-            SUDO=(sudo -n)
-          else
-            die "需要 root 或免密 sudo 才能操作 $APP_DIR"
-          fi
-          run() { "${SUDO[@]}" "$@"; }
-
-          # 下面这些检查统统用 root 做：目录属主不是登录用户时，登录用户可能连
-          # stat 都进不去（root 属主 + 700），会把“有权限”误判成“目录不存在”
-          if ! run test -d "$APP_DIR"; then
-            say "$APP_DIR 以 root 身份也看不到，上级目录内容："
-            run ls -la "$(dirname "$APP_DIR")" >&2 || true
-            die "把 APP_DIR 改成服务器上项目的真实路径"
-          fi
-
-          # 属主和当前用户不一致时 git 会拒绝操作（dubious ownership），
-          # 得在第一次用 git 访问它之前声明为安全目录
+          # 项目目录可能是 root 属主，先声明给 git 的 safe.directory。
           run git config --global --get-all safe.directory | grep -qxF "$APP_DIR" \
             || run git config --global --add safe.directory "$APP_DIR"
 
-          if ! run git -C "$APP_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-            say "$APP_DIR 存在，但里面没有可用的 git 仓库，目录内容："
-            run ls -la "$APP_DIR" >&2 || true
-            say "上级两层内找到的 .git："
-            run find "$(dirname "$APP_DIR")" -maxdepth 4 -name .git -print 2>/dev/null | head -20 >&2 || true
-            die "这个目录不是 clone 出来的（可能是直接上传的），要么先在服务器上 clone，要么改用 rsync 方式部署"
-          fi
-
-          VENV_PY="$APP_DIR/.venv/bin/python"
           if ! run test -x "$VENV_PY"; then
-            say "找不到可执行的 $VENV_PY，项目目录内容："
-            run ls -la "$APP_DIR" >&2 || true
-            die "虚拟环境不在预期位置，先按 README 建好，或告诉我它在哪"
+            echo "找不到 $VENV_PY，请先按 README 创建 .venv" >&2
+            exit 1
           fi
 
-          say "拉取 origin/$DEPLOY_REF（目标 $DEPLOY_SHA）"
           old_sha="$(run git -C "$APP_DIR" rev-parse HEAD)"
-          run git -C "$APP_DIR" fetch --prune origin "$DEPLOY_REF"
-          if ! run git -C "$APP_DIR" merge --ff-only FETCH_HEAD; then
-            run git -C "$APP_DIR" status --short >&2 || true
-            die "无法快进到 origin/$DEPLOY_REF：服务器上有本地改动或分支分叉（plugin_index.json 会被 /插件安装 在运行时改写，部署前先处理它）"
-          fi
+          run git -C "$APP_DIR" fetch --no-tags origin "$DEPLOY_SHA"
+          run git -C "$APP_DIR" merge --ff-only "$DEPLOY_SHA"
           new_sha="$(run git -C "$APP_DIR" rev-parse HEAD)"
+          if [ "$new_sha" != "$DEPLOY_SHA" ]; then
+            echo "服务器 HEAD 是 $new_sha，不是 CI 验证的 $DEPLOY_SHA" >&2
+            exit 1
+          fi
+          echo "代码：$old_sha -> $new_sha"
 
-          # 服务器上有领先的本地提交时，--ff-only 会报 Already up to date 却什么也没换，
-          # 这种“假成功”必须挡住，否则跑的代码和 CI 以为部署的不是一个 commit
-          target_sha="$(run git -C "$APP_DIR" rev-parse FETCH_HEAD)"
-          if [ "$new_sha" != "$target_sha" ]; then
-            run git -C "$APP_DIR" log --oneline "FETCH_HEAD..HEAD" >&2 || true
-            die "服务器上的 HEAD（${new_sha:0:8}）不是 origin/$DEPLOY_REF 的 ${target_sha:0:8}，说明有本地提交领先，不会自动覆盖，请先在服务器上处理"
+          if ! run git -C "$APP_DIR" diff --quiet "$old_sha" "$new_sha" \
+            -- requirements.txt pyproject.toml; then
+            echo "依赖清单有变化，安装 requirements.txt"
+            run "$VENV_PY" -m pip install -r "$APP_DIR/requirements.txt"
           fi
 
-          if [ "$old_sha" = "$new_sha" ]; then
-            say "代码已是最新（${new_sha:0:8}），跳过依赖安装"
-            changed=""
-          else
-            say "代码更新：${old_sha:0:8} -> ${new_sha:0:8}"
-            changed="$(run git -C "$APP_DIR" diff --name-only "$old_sha" "$new_sha")"
-          fi
-
-          if printf '%s\n' "$changed" | grep -qE '^(requirements\.txt|pyproject\.toml)$'; then
-            say "依赖清单有变动，更新 pip 包"
-            run "$VENV_PY" -m pip install -q -U pip
-            run "$VENV_PY" -m pip install -q -r "$APP_DIR/requirements.txt"
-          fi
-
-          # screen 会话按启动它的用户分目录，所以必须和目录属主一样用 root 启停，
-          # 否则以登录用户启动的会话（socket 在 /run/screen/S-<用户> 下）根本查不到
           if ! run bash -c 'command -v screen >/dev/null 2>&1'; then
-            die "服务器上没装 screen（以 root 检查）。Debian/Ubuntu：sudo apt install -y screen；RHEL/CentOS：sudo yum install -y screen"
-          fi
-          # screen -ls 的每一行形如 "\t3768380.fanbot\t(Detached)"
-          screen_pid() {
-            run screen -ls 2>/dev/null \
-              | sed -nE "s/^[[:space:]]*([0-9]+)\.${SCREEN_NAME}[[:space:]]+.*/\1/p" | head -1 || true
-          }
-          screen_state() {
-            run screen -ls 2>/dev/null \
-              | sed -nE "s/^[[:space:]]*[0-9]+\.${SCREEN_NAME}[[:space:]]+.*\((Attached|Detached|Dead).*/\1/p" | head -1 || true
-          }
-          # (Dead) 的会话不算“在跑”，否则会把它当成启动成功
-          screen_has() { local s; s="$(screen_state)"; [ -n "$s" ] && [ "$s" != "Dead" ]; }
-
-          if screen_has; then
-            say "关闭旧的 screen 会话 $SCREEN_NAME"
-            run screen -S "$SCREEN_NAME" -X quit || true
-            for _ in $(seq 1 20); do
-              screen_has || break
-              sleep 0.5
-            done
-            if screen_has; then
-              run screen -wipe >/dev/null 2>&1 || true   # 清掉 (Dead) 状态的残留会话
-              if screen_has; then
-                die "screen 会话 $SCREEN_NAME 没能退出，请在服务器上 screen -r $SCREEN_NAME 看看"
-              fi
-            fi
-          elif run pgrep -f "python[0-9.]* run\.py" >/dev/null 2>&1; then
-            say "发现疑似还在跑的 main.py 进程（用户 / PID / 命令）："
-            run bash -c 'pgrep -f "python[0-9.]* run\.py" | xargs -r ps -o user=,pid=,args= -p' || true
-            say "root 名下的 screen 会话："
-            run screen -ls 2>&1 || true
-            die "上面那些进程不在 root 的 screen 会话 $SCREEN_NAME 里（多半是另一个用户起的），直接启动会起第二个实例抢端口。要么把它停掉改用本 workflow 管理，要么把 SCREEN_NAME 改成你实际在用、且属于同一用户的那个会话名"
+            echo "服务器没有安装 screen" >&2
+            exit 1
           fi
 
-          say "在 screen 会话 $SCREEN_NAME 里启动 main.py"
-          # 不把输出重定向掉，用 screen 自己的 -L -Logfile：这样 screen -r 进去能直接
-          # 看到日志，同时日志也落盘给 CI 用（重定向的话 r 进去只会是一片空白）
+          echo "重启 screen 会话 $SCREEN_NAME"
+          run screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
+          for _ in {1..20}; do
+            screen_active || break
+            sleep 0.5
+          done
+          if screen_active; then
+            echo "旧 screen 会话没有退出，请先手动处理 $SCREEN_NAME" >&2
+            exit 1
+          fi
+          run screen -wipe >/dev/null 2>&1 || true
           run bash -c ": > '$LOG_FILE'" || true
           run screen -L -Logfile "$LOG_FILE" -dmS "$SCREEN_NAME" \
             bash -c "cd '$APP_DIR' && exec '$VENV_PY' main.py"
 
-          # 会话活着不等于机器人起来了（比如卡在交互式提问上），得等它真的监听端口
-          say "等它监听端口（最多 60 秒）"
-          started=""
-          bot_pid=""
-          for _ in $(seq 1 60); do
-            screen_has || break
-            sess_pid="$(screen_pid)"
-            if [ -n "$sess_pid" ]; then
-              bot_pid="$(run pgrep -P "$sess_pid" 2>/dev/null | head -1 || true)"
-            fi
-            if [ -n "$bot_pid" ]; then
-              listening="$(run ss -ltnp 2>/dev/null || true)"
-              case "$listening" in *"pid=${bot_pid},"*) started=1; break ;; esac
-            fi
-            sleep 1
-          done
-          if [ -z "$started" ]; then
-            printf '\n\033[1;31m没能确认它开始监听端口，最近 40 行日志（%s）：\033[0m\n' "$LOG_FILE"
-            run tail -n 40 "$LOG_FILE" 2>/dev/null | redact || true
-            die "screen 会话 $SCREEN_NAME 里的 main.py 没起来：看上面的日志（常见原因是数据库迁移的交互式提问没人回答，或者端口被别的进程占了）"
+          sleep 5
+          if ! screen_active; then
+            echo "main.py 没有保持运行，请在服务器执行 screen -r $SCREEN_NAME 或查看 $LOG_FILE" >&2
+            exit 1
           fi
-          say "$SCREEN_NAME 正在运行（PID $bot_pid，已监听端口，日志：$LOG_FILE）"
-
-          say "部署完成：$new_sha"
+          echo "部署完成：$new_sha"
           REMOTE
-
-      - name: 清理私钥
-        if: always()
-        run: rm -f ~/.ssh/id_deploy
