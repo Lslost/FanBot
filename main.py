@@ -5,10 +5,10 @@ nonebot.init()
 
 # 获取驱动并注册适配器
 driver = nonebot.get_driver()
-if importlib.util.find_spec("onebot.v11"): #onebot适配器
+if importlib.util.find_spec("nonebot.adapters.onebot.v11"): #onebot适配器
     from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
     driver.register_adapter(OneBotV11Adapter)
-elif importlib.util.find_spec("milky"): #milky适配器
+elif importlib.util.find_spec("nonebot.adapters.milky"): #milky适配器
     from nonebot.adapters.milky import Adapter as MilkyAdapter
     driver.register_adapter(MilkyAdapter)
 else:
