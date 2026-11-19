@@ -95,7 +95,7 @@ jobs:
           run() { "${sudo_cmd[@]}" "$@"; }
           screen_active() {
             run screen -ls 2>/dev/null \
-              | grep -Eq "\.${SCREEN_NAME}[[:space:]]+\((Attached|Detached)\)"
+              | grep -Eq "\.${SCREEN_NAME}[[:space:]]+.*\((Attached|Detached)\)"
           }
 
           # 项目目录可能是 root 属主，先声明给 git 的 safe.directory。
