@@ -163,5 +163,5 @@ plugin_index.json  main.py 读的插件清单
 src/plugins/       本地插件：greeting、plugin_manager
 src/utils/         本地工具：退出进程、插件安装 / 卸载
 data/              localstore 数据目录（数据库 / 缓存），LOCALSTORE_USE_CWD=true 时生成在项目根目录
-.env.example       配置模板，复制成 .env 后修改
+.env.example       配置模板，复制成 .env.prod 后修改
 ```
