@@ -51,7 +51,8 @@ playwright install-deps chromium   # 装系统依赖，第一次需要 sudo
 ### 3. 配置 .env
 
 ```bash
-cp .env.example .env
+cp .env.example .env.prod ;
+echo "ENVIRONMENT=prod" > .env
 ```
 
 `.env.example` 里每一项都有注释，说明哪些必填、哪些不填就退回默认行为。最少要改这几项：
