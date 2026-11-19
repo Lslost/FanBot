@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 from nonebot.adapters import Event, MessageSegment
 from nonebot.log import logger
 from nonebot.matcher import Matcher
@@ -23,6 +25,10 @@ def build_image_segment(event: Event, image: bytes) -> MessageSegment | None:
         return None
 
     try:
+        # Milky 的 image() 首参是 URI，二进制内容必须通过 raw= 传入；
+        # OneBot 的 image() 则直接把首参作为文件内容。
+        if "raw" in inspect.signature(factory).parameters:
+            return factory(raw=image)
         return factory(image)
     except Exception as error:
         logger.opt(exception=error).warning(
